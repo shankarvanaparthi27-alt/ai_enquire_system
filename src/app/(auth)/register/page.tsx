@@ -155,9 +155,27 @@ export default function RegisterPage() {
         message: 'Student account connected via Google.',
       });
       router.push('/dashboard');
-    } catch (err) {
-      console.error(err);
-      setErrorMsg(t('auth.errors.authFailed'));
+    } catch (err: unknown) {
+      console.error('Google register error:', err);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const fErr = err as any;
+      const code = fErr?.code || '';
+      if (code === 'auth/unauthorized-domain') {
+        const domain = typeof window !== 'undefined' ? window.location.hostname : 'your domain';
+        setErrorMsg(
+          `Domain "${domain}" is not authorized in Firebase. Please add "${domain}" in Firebase Console → Authentication → Settings → Authorized domains.`
+        );
+      } else if (code === 'auth/popup-closed-by-user') {
+        setErrorMsg('Sign-in popup was closed before completing authentication. Please try again.');
+      } else if (code === 'auth/popup-blocked') {
+        setErrorMsg('Sign-in popup was blocked by your browser. Please allow popups for this site and try again.');
+      } else if (code === 'auth/network-request-failed') {
+        setErrorMsg('Network request failed. Please check your internet connection.');
+      } else if (fErr?.message) {
+        setErrorMsg(fErr.message);
+      } else {
+        setErrorMsg(t('auth.errors.authFailed'));
+      }
     } finally {
       setLoading(false);
     }
