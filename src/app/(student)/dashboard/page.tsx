@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { getFavouriteColleges } from '@/services/favourites';
 import { getRecentlyViewedColleges } from '@/services/recentlyViewed';
 import { College, StudentActivityLog } from '@/types';
+import { isUserAdmin } from '@/lib/auth/adminCheck';
 import {
   Search,
   Heart,
@@ -205,7 +206,7 @@ export default function StudentDashboardPage() {
       )}
 
       {/* Administrative Account Active Banner */}
-      {user && (user.role === 'super_admin' || user.role === 'admin' || user.claims?.admin === true) && (
+      {isUserAdmin(user) && (
         <div className="rounded-3xl border border-purple-500/30 bg-purple-500/10 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 backdrop-blur-md animate-in fade-in duration-200">
           <div className="flex items-center gap-3.5">
             <div className="w-10 h-10 rounded-2xl bg-purple-500/20 text-purple-400 border border-purple-500/30 flex items-center justify-center shrink-0">
@@ -215,7 +216,7 @@ export default function StudentDashboardPage() {
               <h4 className="text-sm font-bold text-white flex items-center gap-2">
                 <span>Super Administrator Privileges Active</span>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-purple-500 text-white">
-                  {user.role}
+                  {user?.role}
                 </span>
               </h4>
               <p className="text-xs text-slate-300">

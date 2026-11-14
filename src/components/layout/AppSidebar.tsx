@@ -7,6 +7,7 @@ import { useSidebar } from '@/contexts/SidebarContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
+import { isUserAdmin } from '@/lib/auth/adminCheck';
 import {
   LayoutDashboard,
   Compass,
@@ -193,7 +194,7 @@ export function AppSidebar() {
         { href: '/notifications', label: t('nav.notifications') || 'Notifications', icon: Bell },
       ],
     },
-    ...(user?.role === 'super_admin' || user?.role === 'admin' || user?.claims?.admin === true
+    ...(isUserAdmin(user)
       ? [
           {
             id: 'admin_nav',

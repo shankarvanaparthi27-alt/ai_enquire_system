@@ -7,6 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { LanguageSelector } from '@/components/ui/LanguageSelector';
 import { ThemeSelector } from '@/components/ui/ThemeSelector';
+import { isUserAdmin } from '@/lib/auth/adminCheck';
 import {
   Compass,
   LayoutDashboard,
@@ -29,6 +30,7 @@ export function Navbar() {
 
   const isHomepage = pathname === '/';
   const isAdminRoute = pathname.startsWith('/admin');
+  const isAdmin = isUserAdmin(user);
 
   const navLinks = [
     { href: '/', label: t('nav.home'), icon: null },
@@ -38,7 +40,7 @@ export function Navbar() {
       ? [
           { href: '/dashboard', label: t('nav.dashboard'), icon: LayoutDashboard },
           { href: '/favourites', label: t('nav.favourites'), icon: Heart },
-          ...(user.role === 'super_admin' || user.role === 'admin' || user.claims?.admin === true
+          ...(isAdmin
             ? [{ href: '/admin/overview', label: 'Admin Portal', icon: ShieldCheck }]
             : []),
           ...(user.role === 'institution_admin'
@@ -116,7 +118,7 @@ export function Navbar() {
               </>
             )}
 
-            {isAdminRoute && (
+            {isAdmin && isAdminRoute && (
               <Link
                 href="/dashboard"
                 className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30 text-xs font-bold transition-all shadow-xs"
@@ -127,14 +129,10 @@ export function Navbar() {
               </Link>
             )}
 
-            {user && (user.role === 'super_admin' || user.role === 'admin' || user.claims?.admin === true) && (
+            {isAdmin && !isAdminRoute && (
               <Link
                 href="/admin/overview"
-                className={`hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm ${
-                  isAdminRoute
-                    ? 'bg-purple-600 text-white shadow-purple-600/30'
-                    : 'bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20'
-                }`}
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20"
               >
                 <ShieldCheck className="w-3.5 h-3.5" />
                 <span>Admin Console</span>
@@ -207,7 +205,7 @@ export function Navbar() {
 
                     <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
 
-                    {(user.role === 'super_admin' || user.role === 'admin' || user.claims?.admin === true) && (
+                    {isAdmin && (
                       <Link
                         href="/admin/overview"
                         onClick={() => setUserDropdownOpen(false)}
@@ -303,7 +301,7 @@ export function Navbar() {
           })}
 
           <div className="pt-3 border-t border-slate-200 dark:border-slate-800">
-            {isAdminRoute && (
+            {isAdmin && isAdminRoute && (
               <Link
                 href="/dashboard"
                 className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30 text-xs font-bold transition-all shadow-xs"
@@ -314,14 +312,10 @@ export function Navbar() {
               </Link>
             )}
 
-            {user && (user.role === 'super_admin' || user.role === 'admin' || user.claims?.admin === true) && (
+            {isAdmin && !isAdminRoute && (
               <Link
                 href="/admin/overview"
-                className={`hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm ${
-                  isAdminRoute
-                    ? 'bg-purple-600 text-white shadow-purple-600/30'
-                    : 'bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20'
-                }`}
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20"
               >
                 <ShieldCheck className="w-3.5 h-3.5" />
                 <span>Admin Console</span>
