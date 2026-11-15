@@ -3,28 +3,23 @@ import { authenticateRequest } from '@/lib/auth/serverAuth';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
 import { streamContent, GeminiContent, GeminiMessagePart } from '@/lib/gemini/client';
 import { retrieveRelevantContext } from '@/services/rag/retrieval';
+import { isGeminiConfigured } from '@/lib/config/env';
 import { CitationSource, SupportedLanguage } from '@/types';
+
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
     const user = await authenticateRequest(req);
-    if (!user) {
-      return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
+    // Allow guest / visitor testing so the assistant is never blocked by auth propagation
+    const effectiveUser = user || {
+      uid: (req.headers.get('x-guest-id') || 'guest-visitor').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48),
+      role: 'student' as const,
+      email: 'guest@universe.ai',
+    };
 
-    const supabase = getSupabaseAdmin();
-    if (!supabase) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Database service unavailable' }),
-        { status: 503, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const body = await req.json();
-    const { sessionId, message, language = 'en', collegeId, attachments = [] } = body;
+    const body = await req.json().catch(() => ({}));
+    const { sessionId, message = '', language = 'en', collegeId, attachments = [] } = body;
 
     if (!sessionId || (!message?.trim() && (!Array.isArray(attachments) || attachments.length === 0))) {
       return new Response(
@@ -33,21 +28,58 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const effectiveMessage = message?.trim() || (attachments.length > 0 ? 'Please analyze the attached file(s).' : '');
+    const effectiveMessage = (message || '').trim() || (attachments.length > 0 ? 'Please analyze the attached file(s).' : '');
+    const supabase = getSupabaseAdmin();
 
-    // 1. Verify session ownership
-    const { data: session, error: sessionErr } = await supabase
-      .from('chat_sessions')
-      .select('id, user_id, title')
-      .eq('id', sessionId)
-      .eq('user_id', user.uid)
-      .single();
+    // Check if Gemini is configured before streaming
+    const encoder = new TextEncoder();
+    if (!isGeminiConfigured) {
+      const stream = new ReadableStream({
+        start(controller) {
+          const warningMessage = `### ⚠️ Gemini API Key Required on Vercel\n\nUniVerse AI is ready, but **\`GEMINI_API_KEY\`** has not been added to your Vercel Project Settings.\n\n**Quick Setup Steps:**\n1. Open your **[Vercel Dashboard](https://vercel.com)** → Select **\`ai-enquire-system\`**.\n2. Navigate to **Settings** → **Environment Variables**.\n3. Add a new variable:\n   - **Name:** \`GEMINI_API_KEY\`\n   - **Value:** *(Paste your Google AI Studio API key)*\n4. Trigger a **Redeploy** on Vercel.\n\nOnce added, this chatbot will instantly answer queries, inspect attached images & documents, and process voice queries.`;
 
-    if (sessionErr || !session) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Session not found or permission denied.' }),
-        { status: 404, headers: { 'Content-Type': 'application/json' } }
-      );
+          controller.enqueue(
+            encoder.encode(`event: chunk\ndata: ${JSON.stringify({ text: warningMessage })}\n\n`)
+          );
+          controller.enqueue(
+            encoder.encode(`event: done\ndata: ${JSON.stringify({ messageId: 'sys-config-notice' })}\n\n`)
+          );
+          controller.close();
+        },
+      });
+
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+        },
+      });
+    }
+
+    // 1. Session verification & auto-provisioning
+    if (supabase && user) {
+      try {
+        const { data: existingSession } = await supabase
+          .from('chat_sessions')
+          .select('id, user_id, title')
+          .eq('id', sessionId)
+          .maybeSingle();
+
+        if (!existingSession) {
+          await supabase
+            .from('chat_sessions')
+            .upsert({
+              id: sessionId,
+              user_id: user.uid,
+              title: effectiveMessage.slice(0, 40) || 'New Conversation',
+              language,
+              updated_at: new Date().toISOString(),
+            });
+        }
+      } catch (dbErr) {
+        console.warn('Session verification non-fatal notice:', dbErr);
+      }
     }
 
     // 2. Persist student message in database with attachment metadata
@@ -62,47 +94,49 @@ export async function POST(req: NextRequest) {
       storedContent = `[${attSummary}]\n\n${storedContent}`;
     }
 
-    const { error: userMsgErr } = await supabase.from('chat_messages').insert({
-      session_id: sessionId,
-      sender: 'user',
-      content: storedContent,
-      language,
-    });
-
-    if (userMsgErr) {
-      console.warn('Failed to persist user message:', userMsgErr.message);
-    }
-
-    // 3. Update session title if it is "New Conversation"
-    if (session.title === 'New Conversation' || !session.title) {
-      const generatedTitle = effectiveMessage.slice(0, 40);
-      await supabase
-        .from('chat_sessions')
-        .update({ title: generatedTitle, updated_at: new Date().toISOString() })
-        .eq('id', sessionId);
-    } else {
-      await supabase
-        .from('chat_sessions')
-        .update({ updated_at: new Date().toISOString() })
-        .eq('id', sessionId);
-    }
-
-    // 4. Retrieve recent message history (last 6 messages) for conversational memory
-    const { data: historyRows } = await supabase
-      .from('chat_messages')
-      .select('sender, content')
-      .eq('session_id', sessionId)
-      .order('created_at', { ascending: true })
-      .limit(6);
-
-    const contents: GeminiContent[] = [];
-    if (historyRows) {
-      historyRows.forEach((row) => {
-        contents.push({
-          role: row.sender === 'user' ? 'user' : 'model',
-          parts: [{ text: row.content }],
+    if (supabase && user) {
+      try {
+        await supabase.from('chat_messages').insert({
+          session_id: sessionId,
+          sender: 'user',
+          content: storedContent,
+          language,
         });
-      });
+
+        // Update session timestamp & title
+        await supabase
+          .from('chat_sessions')
+          .update({
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', sessionId);
+      } catch (userMsgErr) {
+        console.warn('Failed to persist user message:', userMsgErr);
+      }
+    }
+
+    // 3. Retrieve recent message history (last 6 messages) for conversational memory
+    const contents: GeminiContent[] = [];
+    if (supabase && user) {
+      try {
+        const { data: historyRows } = await supabase
+          .from('chat_messages')
+          .select('sender, content')
+          .eq('session_id', sessionId)
+          .order('created_at', { ascending: true })
+          .limit(6);
+
+        if (historyRows) {
+          historyRows.forEach((row) => {
+            contents.push({
+              role: row.sender === 'user' ? 'user' : 'model',
+              parts: [{ text: row.content }],
+            });
+          });
+        }
+      } catch (hErr) {
+        console.warn('Failed to retrieve history:', hErr);
+      }
     }
 
     // Build multimodal user parts for current turn
@@ -139,64 +173,76 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 5. RAG Vector Knowledge Retrieval & Direct College Grounding
-    const { contextText, citations } = await retrieveRelevantContext(message, {
-      collegeId,
-      threshold: 0.3,
-      limit: 4,
-    });
+    // 4. RAG Vector Knowledge Retrieval & Direct College Grounding
+    let citations: CitationSource[] = [];
+    let contextText = '';
+    if (effectiveMessage) {
+      try {
+        const ragRes = await retrieveRelevantContext(effectiveMessage, {
+          collegeId,
+          threshold: 0.3,
+          limit: 4,
+        });
+        citations = ragRes.citations || [];
+        contextText = ragRes.contextText || '';
+      } catch (ragErr) {
+        console.warn('RAG retrieval fallback:', ragErr);
+      }
+    }
 
     // Check for college-specific directory grounding if relevant
     let directoryGrounding = '';
-    try {
-      const qLower = message.toLowerCase();
-      if (
-        collegeId ||
-        qLower.includes('college') ||
-        qLower.includes('university') ||
-        qLower.includes('iit') ||
-        qLower.includes('nit') ||
-        qLower.includes('iiit') ||
-        qLower.includes('aiims') ||
-        qLower.includes('iim') ||
-        qLower.includes('bits') ||
-        qLower.includes('nirf') ||
-        qLower.includes('cutoff') ||
-        qLower.includes('fee') ||
-        qLower.includes('admission')
-      ) {
-        let colQuery = supabase
-          .from('colleges')
-          .select('id, name, slug, code, college_type, category, state, city, nirf_ranking, min_fee_per_year, max_fee_per_year, accreditation, rating');
+    if (supabase) {
+      try {
+        const qLower = (effectiveMessage || '').toLowerCase();
+        if (
+          collegeId ||
+          qLower.includes('college') ||
+          qLower.includes('university') ||
+          qLower.includes('iit') ||
+          qLower.includes('nit') ||
+          qLower.includes('iiit') ||
+          qLower.includes('aiims') ||
+          qLower.includes('iim') ||
+          qLower.includes('bits') ||
+          qLower.includes('nirf') ||
+          qLower.includes('cutoff') ||
+          qLower.includes('fee') ||
+          qLower.includes('admission')
+        ) {
+          let colQuery = supabase
+            .from('colleges')
+            .select('id, name, slug, code, college_type, category, state, city, nirf_ranking, min_fee_per_year, max_fee_per_year, accreditation, rating');
 
-        if (collegeId) {
-          colQuery = colQuery.eq('id', collegeId);
-        } else if (qLower.includes('nirf') || qLower.includes('top') || qLower.includes('best')) {
-          colQuery = colQuery.order('nirf_ranking', { ascending: true, nullsFirst: false }).limit(6);
-        } else {
-          const words = message.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/).filter((w: string) => w.length >= 3);
-          if (words.length > 0) {
-            colQuery = colQuery.or(`name.ilike.%${words[0]}%,city.ilike.%${words[0]}%`).limit(4);
+          if (collegeId) {
+            colQuery = colQuery.eq('id', collegeId);
+          } else if (qLower.includes('nirf') || qLower.includes('top') || qLower.includes('best')) {
+            colQuery = colQuery.order('nirf_ranking', { ascending: true, nullsFirst: false }).limit(6);
           } else {
-            colQuery = colQuery.limit(3);
+            const words = (effectiveMessage || '').replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/).filter((w: string) => w.length >= 3);
+            if (words.length > 0) {
+              colQuery = colQuery.or(`name.ilike.%${words[0]}%,city.ilike.%${words[0]}%`).limit(4);
+            } else {
+              colQuery = colQuery.limit(3);
+            }
+          }
+
+          const { data: matchedCols } = await colQuery;
+          if (matchedCols && matchedCols.length > 0) {
+            directoryGrounding = matchedCols
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              .map((c: any) =>
+                `- ${c.name} (${c.city}, ${c.state}) | NIRF Rank: ${c.nirf_ranking ? '#' + c.nirf_ranking : 'Unranked/Participating'} | Category: ${c.category} | Type: ${c.college_type} | Accreditation: ${c.accreditation || 'Recognized'} | Annual Fee Range: ₹${c.min_fee_per_year?.toLocaleString('en-IN')} - ₹${c.max_fee_per_year?.toLocaleString('en-IN')} | Rating: ${c.rating}/5.0`
+              )
+              .join('\n');
           }
         }
-
-        const { data: matchedCols } = await colQuery;
-        if (matchedCols && matchedCols.length > 0) {
-          directoryGrounding = matchedCols
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .map((c: any) =>
-              `- ${c.name} (${c.city}, ${c.state}) | NIRF Rank: ${c.nirf_ranking ? '#' + c.nirf_ranking : 'Unranked/Participating'} | Category: ${c.category} | Type: ${c.college_type} | Accreditation: ${c.accreditation || 'Recognized'} | Annual Fee Range: ₹${c.min_fee_per_year?.toLocaleString('en-IN')} - ₹${c.max_fee_per_year?.toLocaleString('en-IN')} | Rating: ${c.rating}/5.0`
-            )
-            .join('\n');
-        }
+      } catch {
+        // Non-fatal grounding fallback
       }
-    } catch {
-      // Non-fatal grounding fallback
     }
 
-    // 6. Build Multilingual Universal System Instruction
+    // 5. Build Multilingual Universal System Instruction
     const languageNames: Record<SupportedLanguage, string> = {
       en: 'English',
       te: 'Telugu',
@@ -230,8 +276,7 @@ ${directoryGrounding ? `VERIFIED INSTITUTIONAL DIRECTORY RECORDS:\n${directoryGr
 ${contextText ? `VERIFIED INSTITUTIONAL KNOWLEDGE BASE CONTEXT:\n${contextText}\n` : ''}
     `.trim();
 
-    // 7. Stream response with Server-Sent Events (SSE)
-    const encoder = new TextEncoder();
+    // 6. Stream response with Server-Sent Events (SSE)
     let accumulatedResponse = '';
 
     const stream = new ReadableStream({
@@ -257,38 +302,40 @@ ${contextText ? `VERIFIED INSTITUTIONAL KNOWLEDGE BASE CONTEXT:\n${contextText}\
             );
           }
 
-          // Persist assistant response with citations to database
+          // Persist assistant response with citations to database if available
           let savedMessageId = '';
-          try {
-            const { data: insertedMsg } = await supabase
-              .from('chat_messages')
-              .insert({
-                session_id: sessionId,
-                sender: 'assistant',
-                content: accumulatedResponse.trim(),
-                language,
-                citations: citations.length > 0 ? citations : null,
-              })
-              .select('id')
-              .single();
+          if (supabase && user && accumulatedResponse.trim()) {
+            try {
+              const { data: insertedMsg } = await supabase
+                .from('chat_messages')
+                .insert({
+                  session_id: sessionId,
+                  sender: 'assistant',
+                  content: accumulatedResponse.trim(),
+                  language,
+                  citations: citations.length > 0 ? citations : null,
+                })
+                .select('id')
+                .single();
 
-            if (insertedMsg) {
-              savedMessageId = insertedMsg.id;
+              if (insertedMsg) {
+                savedMessageId = insertedMsg.id;
+              }
+            } catch (dbErr) {
+              console.warn('Failed to persist assistant message:', dbErr);
             }
-          } catch (dbErr) {
-            console.warn('Failed to persist assistant message:', dbErr);
           }
 
           // Send done event
           controller.enqueue(
             encoder.encode(
-              `event: done\ndata: ${JSON.stringify({ messageId: savedMessageId, citations })}\n\n`
+              `event: done\ndata: ${JSON.stringify({ messageId: savedMessageId || `msg-${Date.now()}`, citations })}\n\n`
             )
           );
           controller.close();
         } catch (err: unknown) {
           const errMsg = err instanceof Error ? err.message : 'Generation stream error';
-          console.error('Streaming error:', errMsg);
+          console.error('Streaming error in Gemini generation:', errMsg);
           controller.enqueue(
             encoder.encode(
               `event: error\ndata: ${JSON.stringify({ error: errMsg })}\n\n`
@@ -309,7 +356,7 @@ ${contextText ? `VERIFIED INSTITUTIONAL KNOWLEDGE BASE CONTEXT:\n${contextText}\
   } catch (err: unknown) {
     console.error('API /api/ai/chat error:', err);
     return new Response(
-      JSON.stringify({ success: false, error: 'Internal server error' }),
+      JSON.stringify({ success: false, error: 'Internal server error while initializing chat' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }

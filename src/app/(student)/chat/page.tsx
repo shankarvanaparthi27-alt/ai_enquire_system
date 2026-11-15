@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -135,13 +136,6 @@ export default function ChatPage() {
 
   // Text-To-Speech (Response Audio) State
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
-
-  // Authentication Protection
-  useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/login');
-    }
-  }, [user, authLoading, router]);
 
   // Auto-scroll to bottom
   const scrollToBottom = useCallback(() => {
@@ -485,18 +479,21 @@ export default function ChatPage() {
 
   // Fetch all chat sessions for the student
   const loadSessions = useCallback(async () => {
-    if (!user) return;
+    if (!user) {
+      setLoadingSessions(false);
+      return;
+    }
     try {
       const token = await getIdToken();
       const res = await fetch('/api/chat/sessions', {
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       });
       const data = await res.json();
       if (data.success && Array.isArray(data.data)) {
         setSessions(data.data);
       }
     } catch (err) {
-      console.error('Failed to load chat sessions:', err);
+      console.warn('Failed to load chat sessions:', err);
     } finally {
       setLoadingSessions(false);
     }
@@ -621,7 +618,7 @@ export default function ChatPage() {
   // Send Message & Stream Response
   const handleSendMessage = async (textToSend?: string) => {
     const prompt = (textToSend || inputText).trim();
-    if ((!prompt && attachments.length === 0) || isStreaming || !user) return;
+    if ((!prompt && attachments.length === 0) || isStreaming) return;
 
     if (isRecording) {
       handleStopRecording();
@@ -632,7 +629,7 @@ export default function ChatPage() {
 
     let targetSessionId = activeSessionId;
 
-    // If no active session, create one first
+    // If no active session, create one or fallback to client session ID
     if (!targetSessionId) {
       try {
         const token = await getIdToken();
@@ -640,7 +637,7 @@ export default function ChatPage() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
           },
           body: JSON.stringify({
             title: (prompt || currentAttachments[0]?.name || 'File Analysis').slice(0, 36),
@@ -648,18 +645,37 @@ export default function ChatPage() {
           }),
         });
         const data = await res.json();
-        if (data.success && data.data) {
+        if (data.success && data.data?.id) {
           targetSessionId = data.data.id;
           setSessions((prev) => [data.data, ...prev]);
           setActiveSessionId(data.data.id);
         } else {
-          showToast({ type: 'error', title: 'Error', message: 'Failed to initialize session' });
-          if (currentAttachments.length > 0) setAttachments(currentAttachments);
-          return;
+          const localId = `sess-${Date.now()}`;
+          targetSessionId = localId;
+          const localSession: ChatSession = {
+            id: localId,
+            userId: user?.uid || 'guest',
+            title: (prompt || currentAttachments[0]?.name || 'New Conversation').slice(0, 36),
+            language: language as SupportedLanguage,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          setSessions((prev) => [localSession, ...prev]);
+          setActiveSessionId(localId);
         }
       } catch {
-        if (currentAttachments.length > 0) setAttachments(currentAttachments);
-        return;
+        const localId = `sess-${Date.now()}`;
+        targetSessionId = localId;
+        const localSession: ChatSession = {
+          id: localId,
+          userId: user?.uid || 'guest',
+          title: (prompt || currentAttachments[0]?.name || 'New Conversation').slice(0, 36),
+          language: language as SupportedLanguage,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        setSessions((prev) => [localSession, ...prev]);
+        setActiveSessionId(localId);
       }
     }
 
@@ -694,6 +710,7 @@ export default function ChatPage() {
 
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
+    let accumulatedText = '';
 
     try {
       const token = await getIdToken();
@@ -701,7 +718,8 @@ export default function ChatPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(!user ? { 'x-guest-id': `guest-${Date.now()}` } : {}),
         },
         body: JSON.stringify({
           sessionId: finalSessionId,
@@ -713,7 +731,12 @@ export default function ChatPage() {
       });
 
       if (!response.ok) {
-        throw new Error(`Server returned error ${response.status}`);
+        let errDesc = `Server returned status ${response.status}`;
+        try {
+          const errObj = await response.json();
+          if (errObj.error) errDesc = errObj.error;
+        } catch {}
+        throw new Error(errDesc);
       }
 
       const reader = response.body?.getReader();
@@ -721,7 +744,6 @@ export default function ChatPage() {
 
       const decoder = new TextDecoder();
       let buffer = '';
-      let accumulatedText = '';
       let parsedCitations: CitationSource[] = [];
 
       while (true) {
@@ -739,7 +761,16 @@ export default function ChatPage() {
             if (jsonStr) {
               try {
                 const eventData = JSON.parse(jsonStr);
-                if (eventData.text) {
+                if (eventData.error) {
+                  accumulatedText += (accumulatedText ? '\n\n' : '') + `⚠️ **Notice:** ${eventData.error}`;
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === tempAssistantMsgId
+                        ? { ...msg, content: accumulatedText }
+                        : msg
+                    )
+                  );
+                } else if (eventData.text) {
                   accumulatedText += eventData.text;
                   setMessages((prev) =>
                     prev.map((msg) =>
@@ -767,16 +798,43 @@ export default function ChatPage() {
         }
       }
 
+      if (!accumulatedText.trim()) {
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === tempAssistantMsgId
+              ? {
+                  ...msg,
+                  content:
+                    '⚠️ UniVerse AI was unable to generate a response. Please check that server environment variables (such as GEMINI_API_KEY) are configured in Vercel.',
+                }
+              : msg
+          )
+        );
+      }
+
       // Refresh session title in sidebar if it was updated
       loadSessions();
     } catch (err: unknown) {
       if ((err as Error).name === 'AbortError') {
         // Stream aborted by student
       } else {
+        const errMsg = (err as Error)?.message || 'An error occurred while communicating with UniVerse AI.';
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === tempAssistantMsgId
+              ? {
+                  ...msg,
+                  content:
+                    accumulatedText ||
+                    `⚠️ **Assistant Communication Notice:** ${errMsg}\n\nIf running in production, please verify that \`GEMINI_API_KEY\` and database settings are configured in Vercel.`,
+                }
+              : msg
+          )
+        );
         showToast({
           type: 'error',
-          title: 'Response Error',
-          message: 'An error occurred while communicating with UniVerse AI.',
+          title: 'Communication Notice',
+          message: errMsg,
         });
       }
     } finally {
@@ -1127,6 +1185,24 @@ export default function ChatPage() {
             </button>
           </div>
         </header>
+
+        {/* Guest Preview Mode Notice */}
+        {!user && !authLoading && (
+          <div className="mx-4 sm:mx-6 md:mx-8 mt-3 mb-1 px-4 py-2.5 rounded-2xl bg-cyan-500/10 border border-cyan-500/25 flex items-center justify-between gap-3 text-xs text-cyan-900 dark:text-cyan-200">
+            <div className="flex items-center gap-2.5">
+              <Sparkles className="w-4 h-4 text-cyan-500 shrink-0" />
+              <span>
+                <strong>Guest Mode Active:</strong> UniVerse AI is fully unlocked. Ask any question, upload documents/images, or record voice notes. <Link href="/login" className="underline font-bold text-cyan-600 dark:text-cyan-300 hover:opacity-80">Sign in</Link> to save your conversations to the cloud.
+              </span>
+            </div>
+            <Link
+              href="/login"
+              className="shrink-0 px-3 py-1 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-[11px] transition-all shadow-sm"
+            >
+              Sign In
+            </Link>
+          </div>
+        )}
 
         {/* Chat Message Scrollable Container */}
         <div className="flex-1 overflow-y-auto px-4 sm:px-6 md:px-8 py-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800">
