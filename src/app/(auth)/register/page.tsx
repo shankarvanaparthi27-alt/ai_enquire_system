@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, Suspense } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useToast } from '@/contexts/ToastContext';
@@ -19,8 +19,10 @@ import {
   Sparkles,
 } from 'lucide-react';
 
-export default function RegisterPage() {
+function RegisterForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const redirectTarget = searchParams.get('redirect');
   const {
     registerWithEmail,
     loginWithGoogle,
@@ -102,7 +104,7 @@ export default function RegisterPage() {
           title: 'Email Verified',
           message: `Welcome, ${registeredName || 'Student'}! Your account is active.`,
         });
-        router.push('/dashboard');
+        router.push(redirectTarget || '/dashboard');
       } else {
         setErrorMsg(
           'Email not verified yet. Please click the verification link in your email inbox (or spam folder), then click this button again.'
@@ -154,7 +156,7 @@ export default function RegisterPage() {
         title: 'Google Sign-In Successful',
         message: 'Student account connected via Google.',
       });
-      router.push('/dashboard');
+      router.push(redirectTarget || '/dashboard');
     } catch (err: unknown) {
       console.error('Google register error:', err);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -450,7 +452,7 @@ export default function RegisterPage() {
           <div className="mt-6 text-center text-xs text-slate-500 dark:text-slate-400">
             {t('auth.alreadyHaveAccount')}{' '}
             <Link
-              href="/login"
+              href={redirectTarget ? `/login?redirect=${encodeURIComponent(redirectTarget)}` : '/login'}
               className="font-bold text-cyan-600 dark:text-cyan-400 hover:underline ml-1"
             >
               {t('nav.login')}
@@ -459,5 +461,17 @@ export default function RegisterPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="w-8 h-8 rounded-full border-2 border-cyan-500 border-t-transparent animate-spin" />
+      </div>
+    }>
+      <RegisterForm />
+    </Suspense>
   );
 }

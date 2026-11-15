@@ -102,7 +102,7 @@ export function Navbar() {
           <div className="hidden sm:flex items-center gap-2.5">
             {/* Direct Navbar AI Chatbot Button */}
             <Link
-              href="/chat"
+              href={user ? "/chat" : "/login?redirect=/chat"}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-500/10 via-blue-500/10 to-indigo-500/10 hover:from-cyan-500/20 hover:to-blue-500/20 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30 text-xs font-bold transition-all shadow-xs group"
               title="Open Universal AI Chatbot"
             >
@@ -251,7 +251,7 @@ export function Navbar() {
           {/* Mobile menu button & quick AI Chatbot icon */}
           <div className="flex items-center gap-2 sm:hidden">
             <Link
-              href="/chat"
+              href={user ? "/chat" : "/login?redirect=/chat"}
               className="p-1.5 rounded-xl bg-gradient-to-r from-cyan-500/15 to-blue-500/15 text-cyan-600 dark:text-cyan-400 border border-cyan-500/30 text-xs font-bold flex items-center gap-1"
               title="AI Chatbot"
               aria-label="AI Chatbot"

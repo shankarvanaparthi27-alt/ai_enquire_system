@@ -7,7 +7,14 @@ import { env, isGeminiConfigured } from '@/lib/config/env';
  */
 
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
-const GENERATION_MODEL = 'gemini-3.5-flash-lite';
+const CANDIDATE_GENERATION_MODELS = [
+  'gemini-3.5-flash-lite',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-2.5-flash',
+  'gemini-flash-latest',
+];
 const EMBEDDING_MODEL = 'gemini-embedding-001';
 
 function getApiKey(): string {
@@ -43,11 +50,10 @@ export interface GenerationOptions {
 }
 
 /**
- * Generate a complete non-streaming response from Gemini 3.5 Flash-Lite
+ * Generate a complete non-streaming response with automatic model fallback
  */
 export async function generateContent(options: GenerationOptions): Promise<string> {
   const apiKey = getApiKey();
-  const url = `${GEMINI_BASE_URL}/models/${GENERATION_MODEL}:generateContent?key=${apiKey}`;
 
   const body: Record<string, unknown> = {
     contents: options.contents,
@@ -63,30 +69,40 @@ export async function generateContent(options: GenerationOptions): Promise<strin
     };
   }
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30000),
-  });
+  let lastError = '';
+  for (const model of CANDIDATE_GENERATION_MODELS) {
+    try {
+      const url = `${GEMINI_BASE_URL}/models/${model}:generateContent?key=${apiKey}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30000),
+      });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Gemini API Error:', response.status, errorText);
-    throw new Error(`Gemini API returned status ${response.status}: ${errorText}`);
+      if (!response.ok) {
+        lastError = await response.text();
+        if (response.status === 404 || response.status === 400) {
+          // Model not supported on this specific key tier, try next candidate
+          continue;
+        }
+        throw new Error(`Gemini API returned status ${response.status}: ${lastError}`);
+      }
+
+      const data = await response.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text) return text;
+    } catch (err: unknown) {
+      if ((err as Error).name === 'AbortError') throw err;
+      lastError = (err as Error).message;
+    }
   }
 
-  const data = await response.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error('Gemini returned an empty response candidate.');
-  }
-
-  return text;
+  throw new Error(`Gemini generation failed across candidate models: ${lastError}`);
 }
 
 /**
- * Stream text from Gemini 3.5 Flash-Lite using Server-Sent Events (SSE)
+ * Stream text from Gemini using Server-Sent Events (SSE) with automatic candidate fallback
  * Yields text tokens in real time.
  */
 export async function* streamContent(
@@ -94,7 +110,6 @@ export async function* streamContent(
   signal?: AbortSignal
 ): AsyncGenerator<string, void, unknown> {
   const apiKey = getApiKey();
-  const url = `${GEMINI_BASE_URL}/models/${GENERATION_MODEL}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
   const body: Record<string, unknown> = {
     contents: options.contents,
@@ -110,22 +125,41 @@ export async function* streamContent(
     };
   }
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: signal || AbortSignal.timeout(60000),
-  });
+  let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let lastError = '';
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Gemini Streaming API Error:', response.status, errorText);
-    throw new Error(`Gemini streaming failed with status ${response.status}: ${errorText}`);
+  for (const model of CANDIDATE_GENERATION_MODELS) {
+    try {
+      const url = `${GEMINI_BASE_URL}/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: signal || AbortSignal.timeout(60000),
+      });
+
+      if (!response.ok) {
+        lastError = await response.text();
+        if (response.status === 404 || response.status === 400) {
+          // Candidate model not found on key, try next candidate model
+          continue;
+        }
+        throw new Error(`Gemini streaming failed with status ${response.status}: ${lastError}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (reader) {
+        activeReader = reader;
+        break;
+      }
+    } catch (err: unknown) {
+      if ((err as Error).name === 'AbortError') throw err;
+      lastError = (err as Error).message;
+    }
   }
 
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error('Failed to get readable stream from Gemini response.');
+  if (!activeReader) {
+    throw new Error(`Failed to initialize Gemini stream across candidate models: ${lastError}`);
   }
 
   const decoder = new TextDecoder();
@@ -133,7 +167,7 @@ export async function* streamContent(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await activeReader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -158,7 +192,7 @@ export async function* streamContent(
       }
     }
   } finally {
-    reader.releaseLock();
+    activeReader.releaseLock();
   }
 }
 

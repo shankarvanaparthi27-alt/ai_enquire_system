@@ -3,6 +3,8 @@ import { authenticateRequest } from '@/lib/auth/serverAuth';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
 import { ChatMessage, ChatSession, SupportedLanguage } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
 interface RouteContext {
   params: Promise<{ id: string }>;
 }

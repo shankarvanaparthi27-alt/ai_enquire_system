@@ -37,9 +37,17 @@ export default function HomePage() {
   const [selectedCollege, setSelectedCollege] = useState<College | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
+  const handleChatNavigation = () => {
+    if (user) {
+      router.push('/chat');
+    } else {
+      router.push('/login?redirect=/chat');
+    }
+  };
+
   const handleChatSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    router.push('/chat');
+    handleChatNavigation();
   };
 
   useEffect(() => {
@@ -284,7 +292,7 @@ export default function HomePage() {
               {/* CTA Button to Full Chatbot */}
               <div className="pt-2">
                 <Link
-                  href="/chat"
+                  href={user ? "/chat" : "/login?redirect=/chat"}
                   className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-xl shadow-cyan-500/25 transition-all transform hover:-translate-y-0.5 active:scale-95"
                 >
                   <Bot className="w-4 h-4" />
@@ -312,7 +320,7 @@ export default function HomePage() {
                     </div>
                   </div>
                   <Link
-                    href="/chat"
+                    href={user ? "/chat" : "/login?redirect=/chat"}
                     className="text-[11px] font-bold text-cyan-600 dark:text-cyan-400 hover:underline flex items-center gap-1"
                   >
                     <span>Full Screen</span>
@@ -388,7 +396,7 @@ export default function HomePage() {
                     <button
                       key={idx}
                       type="button"
-                      onClick={() => router.push('/chat')}
+                      onClick={handleChatNavigation}
                       className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-cyan-500 transition-colors"
                     >
                       {chip}

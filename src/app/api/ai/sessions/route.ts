@@ -3,6 +3,8 @@ import { authenticateRequest } from '@/lib/auth/serverAuth';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
 import { ChatSession, SupportedLanguage } from '@/types';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(req: NextRequest) {
   try {
     const user = await authenticateRequest(req);

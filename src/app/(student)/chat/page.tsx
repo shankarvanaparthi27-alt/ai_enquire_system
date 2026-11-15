@@ -137,6 +137,13 @@ export default function ChatPage() {
   // Text-To-Speech (Response Audio) State
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
 
+  // Require login: Redirect unauthenticated visitors to login, then immediately back to chat
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push('/login?redirect=/chat');
+    }
+  }, [user, authLoading, router]);
+
   // Auto-scroll to bottom
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

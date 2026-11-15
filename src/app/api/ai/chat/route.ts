@@ -6,6 +6,7 @@ import { retrieveRelevantContext } from '@/services/rag/retrieval';
 import { isGeminiConfigured } from '@/lib/config/env';
 import { CitationSource, SupportedLanguage } from '@/types';
 
+export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
@@ -354,10 +355,31 @@ ${contextText ? `VERIFIED INSTITUTIONAL KNOWLEDGE BASE CONTEXT:\n${contextText}\
       },
     });
   } catch (err: unknown) {
-    console.error('API /api/ai/chat error:', err);
-    return new Response(
-      JSON.stringify({ success: false, error: 'Internal server error while initializing chat' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    );
+    const errMsg = err instanceof Error ? err.message : 'Internal server error while initializing chat';
+    console.error('API /api/ai/chat top-level error:', err);
+    const encoder = new TextEncoder();
+    const fallbackStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            `event: chunk\ndata: ${JSON.stringify({
+              text: `### ⚠️ Assistant Initialization Notice\n\n${errMsg}\n\nPlease verify that **\`GEMINI_API_KEY\`** and Supabase environment variables are properly configured in Vercel.`,
+            })}\n\n`
+          )
+        );
+        controller.enqueue(
+          encoder.encode(`event: done\ndata: ${JSON.stringify({ messageId: 'sys-error' })}\n\n`)
+        );
+        controller.close();
+      },
+    });
+
+    return new Response(fallbackStream, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+      },
+    });
   }
 }
