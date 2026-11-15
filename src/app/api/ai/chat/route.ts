@@ -339,7 +339,17 @@ ${contextText ? `VERIFIED INSTITUTIONAL KNOWLEDGE BASE CONTEXT:\n${contextText}\
           console.error('Streaming error in Gemini generation:', errMsg);
           controller.enqueue(
             encoder.encode(
+              `event: chunk\ndata: ${JSON.stringify({ text: `\n\n⚠️ **Generation Notice:** ${errMsg}\n\nPlease check that GEMINI_API_KEY is configured in Vercel Project Settings.` })}\n\n`
+            )
+          );
+          controller.enqueue(
+            encoder.encode(
               `event: error\ndata: ${JSON.stringify({ error: errMsg })}\n\n`
+            )
+          );
+          controller.enqueue(
+            encoder.encode(
+              `event: done\ndata: ${JSON.stringify({ messageId: `msg-err-${Date.now()}`, citations })}\n\n`
             )
           );
           controller.close();
